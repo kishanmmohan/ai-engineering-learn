@@ -6,6 +6,11 @@ __pycache__/
 # C extensions
 *.so
 
+# Environment files (keep committed examples)
+.env
+.env.*
+!.env.*.example
+
 # Distribution / packaging
 .Python
 build/
@@ -25,3 +30,5 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+.omc/
