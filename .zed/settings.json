@@ -1,0 +1,38 @@
+{
+  // Python tooling for this uv-managed project: ty (types) + ruff (lint/format).
+  "languages": {
+    "Python": {
+      // Enable only basedpyright + ruff. Omitting pyright/ty/pylsp disables them,
+      // so ruff owns lint/format and basedpyright owns type-checking (no overlap).
+      "language_servers": [
+        "basedpyright",
+        "ruff"
+      ],
+      // Format on save with ruff. ruff reads [tool.ruff] from pyproject.toml
+      // (line-length 88, target py314, rules E/F/I/UP/B) — single source of truth.
+      "format_on_save": "on",
+      "formatter": {
+        "language_server": {
+          "name": "ruff"
+        }
+      },
+      // On save, organize imports and apply ruff's safe autofixes — mirrors the
+      // .pre-commit-config.yaml `ruff --fix` + `ruff-format` hooks.
+      "code_actions_on_format": {
+        "source.organizeImports.ruff": true,
+        "source.fixAll.ruff": true
+      }
+    }
+  },
+  // Auto-activate the uv virtualenv (.venv) in Zed's integrated terminal.
+  "terminal": {
+    "detect_venv": {
+      "on": {
+        "directories": [
+          ".venv"
+        ],
+        "activate_script": "default"
+      }
+    }
+  }
+}

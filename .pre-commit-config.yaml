@@ -1,0 +1,40 @@
+repos:
+  # General-purpose hygiene hooks that apply across all file types.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      # Zed config is JSONC (allows // comments), so skip strict JSON parsing.
+      - id: check-json
+        exclude: ^\.zed/
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: debug-statements
+      - id: detect-private-key
+      - id: mixed-line-ending
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      # Lint, autofixing what it safely can.
+      - id: ruff
+        args: [--fix]
+      # Enforce formatting.
+      - id: ruff-format
+
+  # Type-check with basedpyright. Run as a local hook via `uv run` so it uses the
+  # project's virtualenv (with all deps installed) instead of an isolated env,
+  # which avoids spurious missing-import errors.
+  - repo: local
+    hooks:
+      - id: basedpyright
+        name: basedpyright
+        entry: uv run basedpyright
+        language: system
+        types: [python]
+        # Type checking needs whole-project context, so ignore changed-file list.
+        pass_filenames: false
