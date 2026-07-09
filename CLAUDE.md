@@ -4,17 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`ai-engineering-learn` is a personal learning/scratch project for AI engineering. It is currently a bare `uv`-managed Python scaffold (a hello-world `main.py`) with no dependencies yet — expect it to grow.
+`ai-engineering-learn` is a personal learning project for AI engineering, structured as a six-phase curriculum in `lessons/` (phase-1 through phase-6): LLM fundamentals → RAG/MCP → orchestration & agents → security/guardrails → observability/evals → cost/latency + capstone. Code is written against that plan, so check the relevant `lessons/phase-N.md` for context on what's being built and why. Application code is still minimal (`main.py` is a hello-world), but the dependency stack for all phases is already installed: LiteLLM, LangChain/LangGraph, Langfuse, FastAPI, SQLAlchemy/Alembic, Qdrant, Neo4j, Temporal, Streamlit, structlog.
 
 ## Environment
 
 - Managed by [`uv`](https://docs.astral.sh/uv/). Requires Python `>=3.14` (pinned via `.python-version`).
-- Dependencies live in `pyproject.toml` under `[project.dependencies]`.
+- Runtime deps in `[project.dependencies]`; dev tools (pytest, ruff, basedpyright, httpx) in the `dev` dependency group. `uv sync` installs both.
 
 ## Commands
 
-- Run the app: `uv run main.py` (or `uv run python main.py`)
-- Add a dependency: `uv add <package>` (then it's available via `uv run`)
-- Sync the environment after pulling changes: `uv sync`
+- Run the app: `uv run main.py`
+- Add a dependency: `uv add <package>` (dev tool: `uv add --group dev <package>`)
+- Tests: `uv run pytest` (single test: `uv run pytest path/to/test.py::test_name`; async tests use `pytest-asyncio`)
+- Lint: `uv run ruff check --fix .` — format: `uv run ruff format .`
+- Type-check: `uv run basedpyright` (must run via `uv run` so it sees the project venv)
+- All checks at once: `uv run pre-commit run --all-files`
 
-No test, lint, or build tooling is configured yet. When adding tests, prefer `pytest` run via `uv run pytest` (single test: `uv run pytest path::test_name`).
+## Backing services
+
+Local infra (Postgres, Temporal + UI, Neo4j, Qdrant) runs via Docker Compose:
+
+```
+cp .env.tool.example .env.tool   # required before first `up`
+docker compose -f docker-compose-tool.yml up -d
+docker compose -f docker-compose-tool.yml down   # add -v to drop volumes
+```
+
+Ports: Postgres 5432, Temporal 7233 (UI at 8080), Neo4j 7474/7687, Qdrant 6333/6334. Gotcha documented in `.env.tool.example`: `POSTGRES_USER` must not be `temporal`, or Temporal's auto-setup silently skips creating its databases.
+
+## Tooling conventions
+
+- Ruff owns lint + formatting (config in `pyproject.toml`: line length 88, target py314, rules E/F/I/UP/B); basedpyright owns type-checking. Zed is configured (`.zed/settings.json`) to format on save with ruff and use both language servers — keep `pyproject.toml` the single source of truth for ruff settings.
+- Pre-commit (`.pre-commit-config.yaml`) enforces the same on commit: hygiene hooks, `ruff --fix`, `ruff-format`, and basedpyright (run whole-project via `uv run`). Enable with `uv run pre-commit install` after cloning.
