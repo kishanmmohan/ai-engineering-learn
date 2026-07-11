@@ -107,12 +107,67 @@ def find_trace(env: dict[str, str], marker: str, *, attempts: int = 12, delay: i
     return None, host
 
 
+def show_trace_scores(
+    env: dict[str, str], trace_id: str, *, attempts: int = 12, delay: int = 5
+):
+    """Fetch a trace by id and print its generation usage/cost + attached scores.
+
+    Used to confirm the /chat service logged ttft_ms / total_latency_ms to the same
+    trace the proxy created (pass the X-Trace-Id header the endpoint returns).
+    """
+    host = env["LANGFUSE_HOST"].rstrip("/")
+    auth = base64.b64encode(
+        f"{env['LANGFUSE_PUBLIC_KEY']}:{env['LANGFUSE_SECRET_KEY']}".encode()
+    ).decode()
+    headers = {"Authorization": f"Basic {auth}"}
+    for attempt in range(1, attempts + 1):
+        try:
+            trace = http_json(f"{host}/api/public/traces/{trace_id}", headers=headers)
+        except SystemExit:
+            print(
+                f"  attempt {attempt}/{attempts}: not ingested yet, waiting {delay}s..."
+            )
+            time.sleep(delay)
+            continue
+        scores = trace.get("scores") or []
+        gens = [
+            o for o in trace.get("observations") or [] if o.get("type") == "GENERATION"
+        ]
+        names = {s.get("name") for s in scores}
+        if gens and {"ttft_ms", "total_latency_ms"} <= names:
+            g = gens[0]
+            u = g.get("usage") or {}
+            print("\n--- TRACE FOUND IN LANGFUSE ---")
+            print(f"  traceId:          {trace_id}")
+            print(f"  name:             {trace.get('name')}")
+            print(f"  session:          {trace.get('sessionId')}")
+            print(f"  model:            {g.get('model')}")
+            print(f"  tokens (in/out):  {u.get('input')} / {u.get('output')}")
+            print(f"  TOTAL cost  ($):  {g.get('calculatedTotalCost')}")
+            for s in scores:
+                name, val, dtype = s.get("name"), s.get("value"), s.get("dataType")
+                print(f"  score: {name} = {val} ({dtype})")
+            print(f"  dashboard:        {host}/project/_/traces/{trace_id}")
+            return 0
+        print(f"  attempt {attempt}/{attempts}: waiting for scores, {delay}s...")
+        time.sleep(delay)
+    print(
+        "\nNOT COMPLETE after polling — generation and/or ttft/latency scores missing."
+    )
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
         default="primary",
         help="proxy model group to call (default: primary)",
+    )
+    parser.add_argument(
+        "--trace-id",
+        help="skip the completion; just fetch this trace's generation + scores "
+        "(the X-Trace-Id header /chat returns)",
     )
     args = parser.parse_args()
 
@@ -125,6 +180,10 @@ def main() -> int:
     ):
         if not env.get(required):
             sys.exit(f"error: {required} missing/empty in {ENV_FILE}")
+
+    if args.trace_id:
+        print(f"fetching trace {args.trace_id} ...")
+        return show_trace_scores(env, args.trace_id)
 
     marker = f"proof-{secrets.token_hex(5)}"
     print(f"marker: {marker}")

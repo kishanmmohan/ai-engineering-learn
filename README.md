@@ -44,18 +44,55 @@ set -a; source .env.proxy; set +a                    # export proxy + provider k
 uv run uvicorn services.chat.src.main:app --reload   # http://localhost:8000
 ```
 
-Then send a prompt — `/chat` streams the reply back as Server-Sent Events
-(one `data:` line per token delta), routed through the proxy. `curl -N`
-disables buffering so you see tokens arrive live:
+`POST /chat` takes the full conversation history (`messages`) and streams the
+reply back as Server-Sent Events — one `data:` line per token delta, then a
+`[DONE]` sentinel — routed through the proxy. `curl -N` disables buffering so
+tokens arrive live; `-D -` prints the response headers:
 
 ```sh
-curl -sN localhost:8000/chat -X POST -H 'content-type: application/json' \
-  -d '{"prompt": "In one word, reply: ok"}'
+curl -sN -D - localhost:8000/chat -X POST -H 'content-type: application/json' \
+  -d '{"messages": [{"role": "user", "content": "In one word, reply: ok"}]}'
+# X-Trace-Id:   <hex>          <- find this request in LangFuse
+# X-Session-Id: <hex>          <- resend as "session_id" next turn to keep the session
 # -> data: {"delta": "Ok"}
 #    data: [DONE]
 ```
 
+Every request is one LangFuse trace: token counts + cost from the proxy, plus
+two NUMERIC scores the service measures and attaches — `ttft_ms` (time to first
+token) and `total_latency_ms`. The server is stateless, so a multi-turn client
+resends the whole `messages` list each turn and reuses the `X-Session-Id` it got
+back, which groups the turns into one LangFuse session.
+
 Interactive API docs are at `http://localhost:8000/docs`.
+
+## Chat UI
+
+A Nuxt frontend (Claude/ChatGPT-style: streaming replies, markdown, multi-turn)
+lives in [`services/chat-ui/`](services/chat-ui/). It never calls the backend from
+the browser — its Nitro server proxies `/api/chat` to the chat service, so there's
+no CORS and the backend stays unexposed. For local dev against a running backend:
+
+```sh
+cd services/chat-ui && pnpm install
+CHAT_API_URL=http://localhost:8000 pnpm dev   # http://localhost:3000
+```
+
+## Run the full chat app (Docker)
+
+`docker-compose-proxy.yml` runs the whole app — LiteLLM gateway, FastAPI backend,
+and Nuxt UI — wired together over the compose network (`chat-ui → chat → litellm`):
+
+```sh
+cp .env.proxy.example .env.proxy                        # then fill in real keys
+docker compose -f docker-compose-proxy.yml up -d --build
+open http://localhost:3000                              # the chat UI
+```
+
+Only the UI (`:3000`) and the gateway (`:4000`) are published to the host; the
+backend is reachable only inside the network at `http://chat:8000`. After changing
+app code, rebuild just the app: `docker compose -f docker-compose-proxy.yml up -d
+--build chat chat-ui`.
 
 Development commands and tooling conventions are documented in
 [CLAUDE.md](CLAUDE.md).

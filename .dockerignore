@@ -1,0 +1,23 @@
+# Context for the chat service image (build context = repo root). Keep it lean.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.ruff_cache
+.pytest_cache
+
+# The frontend has its own build/context — never ship it into the backend image.
+services/chat-ui/node_modules
+services/chat-ui/.nuxt
+services/chat-ui/.output
+
+# Local env + editor state
+.env
+.env.*
+!.env.*.example
+.zed
+.claude
+
+# Docs / lessons aren't needed at runtime
+lessons
+docs

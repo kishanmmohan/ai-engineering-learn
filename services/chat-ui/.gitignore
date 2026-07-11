@@ -1,0 +1,14 @@
+# Nuxt / Nitro build artifacts
+.nuxt
+.output
+.data
+dist
+
+# Deps
+node_modules
+
+# Local env
+.env
+
+# Logs
+*.log

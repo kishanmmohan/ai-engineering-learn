@@ -1,0 +1,6 @@
+# Allow these deps to run native install/build scripts (pnpm blocks them by
+# default). esbuild powers Vite's transpile; @parcel/watcher speeds up dev file
+# watching.
+allowBuilds:
+  '@parcel/watcher': true
+  esbuild: true
