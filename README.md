@@ -30,6 +30,8 @@ Requires [uv](https://docs.astral.sh/uv/) and Docker.
 uv sync                                        # install deps (Python >=3.14)
 cp .env.tool.example .env.tool                 # configure backing services
 docker compose -f docker-compose-tool.yml up -d  # Postgres, Temporal, Neo4j, Qdrant
+cp .env.proxy.example .env.proxy               # add provider + LangFuse keys
+docker compose -f docker-compose-proxy.yml up -d # LiteLLM proxy (LLM gateway, :4000)
 ```
 
 Development commands and tooling conventions are documented in

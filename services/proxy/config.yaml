@@ -1,0 +1,38 @@
+# LiteLLM proxy config for ai-engineering-learn (Phase 1 "LLM Workbench").
+#
+# All provider traffic flows through this gateway — the app never calls Anthropic /
+# OpenAI directly. Secrets are referenced via `os.environ/...` (resolved from the
+# container env, supplied by .env.proxy) so no keys ever live in this file.
+#
+# Edit + `docker compose -f docker-compose-proxy.yml restart litellm` to apply.
+
+model_list:
+  # Primary chat model (Anthropic).
+  - model_name: primary
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Fallback chat model (OpenAI) — a different provider, so an Anthropic outage or a
+  # bad/expired key transparently fails over instead of erroring.
+  - model_name: fallback
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Embeddings for the /similar endpoint. Wired now so every provider call — including
+  # embeddings — goes through the proxy from day one.
+  - model_name: embeddings
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  success_callback: ["langfuse"]           # ship traces + token/cost data to LangFuse
+  failure_callback: ["langfuse"]           # capture failed calls too
+  fallbacks: [{"primary": ["fallback"]}]   # model-group fallback: primary -> fallback
+  drop_params: true                        # tolerate provider-specific param differences
+
+general_settings:
+  # Every request must send `Authorization: Bearer <LITELLM_MASTER_KEY>`.
+  master_key: os.environ/LITELLM_MASTER_KEY

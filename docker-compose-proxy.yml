@@ -1,0 +1,37 @@
+# Local LiteLLM proxy (LLM gateway) for ai-engineering-learn.
+#
+# Separate from the backing-infra stack (docker-compose-tool.yml) so the gateway can be
+# restarted / retuned without bouncing Postgres, Temporal, Neo4j, or Qdrant.
+#
+#   cp .env.proxy.example .env.proxy                              # then fill in real keys
+#   docker compose -f docker-compose-proxy.yml up -d
+#   docker compose -f docker-compose-proxy.yml restart litellm    # after editing config.yaml (volume-mounted, re-read on boot)
+#   docker compose -f docker-compose-proxy.yml up -d --force-recreate  # after editing .env.proxy (env is read only at container creation)
+#   docker compose -f docker-compose-proxy.yml down
+#
+# `.env.proxy` must exist before `up` — the service declares it as its env source.
+
+services:
+  litellm:
+    # Pinned stable tag (repo convention: everything is pinned). Bump deliberately.
+    # Tags: https://github.com/BerriAI/litellm/pkgs/container/litellm
+    image: ghcr.io/berriai/litellm:main-v1.81.9-stable
+    container_name: aie-litellm
+    env_file:
+      - .env.proxy
+    volumes:
+      - ./services/proxy/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"   # free — tool stack uses 5432/7233/8080/7474/7687/6333/6334
+    healthcheck:
+      # python-based: curl is not guaranteed to ship in the image.
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

@@ -32,6 +32,20 @@ docker compose -f docker-compose-tool.yml down   # add -v to drop volumes
 
 Ports: Postgres 5432, Temporal 7233 (UI at 8080), Neo4j 7474/7687, Qdrant 6333/6334. Gotcha documented in `.env.tool.example`: `POSTGRES_USER` must not be `temporal`, or Temporal's auto-setup silently skips creating its databases.
 
+## LiteLLM proxy (LLM gateway)
+
+All provider traffic goes through a LiteLLM proxy — the app never calls Anthropic/OpenAI directly (a Phase 1 acceptance criterion). It runs in its own compose file, separate from the backing-infra stack, so it can be restarted without bouncing the databases:
+
+```
+cp .env.proxy.example .env.proxy   # then fill in real provider + LangFuse keys
+docker compose -f docker-compose-proxy.yml up -d
+docker compose -f docker-compose-proxy.yml restart litellm   # after editing config.yaml
+docker compose -f docker-compose-proxy.yml up -d --force-recreate  # after editing .env.proxy (env is only read at container creation, not on restart)
+docker compose -f docker-compose-proxy.yml down
+```
+
+Config is `services/proxy/config.yaml` (secrets referenced via `os.environ/...`, never inline). Model groups: `primary` (Anthropic) → `fallback` (OpenAI) cross-provider failover, plus `embeddings` (OpenAI). LangFuse success/failure callbacks handle tracing + cost; the proxy is stateless (no spend DB). Port 4000; every request must send `Authorization: Bearer $LITELLM_MASTER_KEY`.
+
 ## Tooling conventions
 
 - Ruff owns lint + formatting (config in `pyproject.toml`: line length 88, target py314, rules E/F/I/UP/B); basedpyright owns type-checking. Zed is configured (`.zed/settings.json`) to format on save with ruff and use both language servers — keep `pyproject.toml` the single source of truth for ruff settings.
