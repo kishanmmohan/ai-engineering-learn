@@ -11,6 +11,13 @@ The proxy's LangFuse callback records each generation (tokens + cost) under the
 same trace as NUMERIC scores — LangFuse merges them by trace_id, so no lookup is
 needed. `session_id` groups a conversation's turns into one LangFuse session.
 
+Prompt caching: a fixed system prompt (loaded from system_prompt.md) is prepended
+as the stable prefix and marked with an Anthropic `cache_control` breakpoint, so its
+tokens are cached and re-read at a discount on repeat calls (the growing history
+after it is never cached). The prefix must stay byte-identical and clear the
+provider's minimum cacheable length — 4096 tokens for Haiku 4.5 — or nothing caches.
+Cache hits show up as cache_read tokens in the LangFuse trace.
+
 Run it:
     LITELLM_MASTER_KEY=sk-... uv run python services/chat/src/ai_client.py
 """
@@ -18,7 +25,8 @@ Run it:
 import os
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from pathlib import Path
 
 import litellm
 import structlog
@@ -39,6 +47,35 @@ _langfuse = Langfuse(
     secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
     host=os.environ.get("LANGFUSE_HOST"),
 )
+
+# The stable system prefix that gets cached, kept in its own file so it can grow
+# without fighting the 88-col lint and so it reads as a versioned prompt asset. It is
+# deliberately long: Anthropic only caches a prefix once it clears a minimum token
+# count — 4096 tokens for Haiku 4.5 (our `primary`) — so a short prompt would be
+# marked cacheable yet never produce a cache hit. It must stay BYTE-IDENTICAL across
+# requests; any per-request value (timestamp, user id) baked in here would change the
+# prefix and defeat the cache. Every edit is one cache miss for the first call after.
+SYSTEM_PROMPT = (Path(__file__).parent / "system_prompt.md").read_text().strip()
+
+
+def _cached_system_message() -> dict[str, object]:
+    """The stable system prefix as an Anthropic cache breakpoint.
+
+    Everything up to and including this block is cached; the variable conversation
+    history that follows it is not. The `cache_control` marker is what opts this
+    prefix into caching — without it Anthropic caches nothing (unlike OpenAI, which
+    caches long prefixes automatically). LiteLLM forwards the marker to the provider.
+    """
+    return {
+        "role": "system",
+        "content": [
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+    }
 
 
 def complete(prompt: str, model: str = "primary") -> str:
@@ -97,14 +134,19 @@ def stream_complete(
 ) -> Iterator[str]:
     """Stream a completion through the proxy, yielding text deltas as they arrive.
 
-    `messages` is the full conversation history (OpenAI role/content dicts). TTFT is
-    the wall-clock to the first non-empty delta; total latency is the whole stream.
-    Both are logged to the LangFuse trace identified by `trace_id` once the stream
-    ends (or the client disconnects, via the finally block).
+    `messages` is the full conversation history (OpenAI role/content dicts). A cached
+    system prefix is prepended; TTFT is the wall-clock to the first non-empty delta and
+    total latency is the whole stream. Both are logged to the LangFuse trace identified
+    by `trace_id` once the stream ends (or the client disconnects, via the finally).
     """
     metadata: dict[str, str] = {"trace_id": trace_id, "trace_name": "chat"}
     if session_id:
         metadata["session_id"] = session_id
+
+    # Cached stable prefix first, then the variable client history. The system block
+    # is byte-identical every request, so its tokens are re-read from cache after the
+    # first call; the history after it changes every turn and is never cached.
+    full_messages: list[Mapping[str, object]] = [_cached_system_message(), *messages]
 
     start = time.perf_counter()
     # metadata rides in extra_body so it reaches the PROXY request body (where its
@@ -115,7 +157,7 @@ def stream_complete(
         model=f"litellm_proxy/{model}",
         api_base=PROXY_URL,
         api_key=MASTER_KEY,
-        messages=messages,
+        messages=full_messages,
         stream=True,
         extra_body={"metadata": metadata},
     )

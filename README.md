@@ -64,6 +64,12 @@ token) and `total_latency_ms`. The server is stateless, so a multi-turn client
 resends the whole `messages` list each turn and reuses the `X-Session-Id` it got
 back, which groups the turns into one LangFuse session.
 
+A fixed system prompt (`services/chat/src/system_prompt.md`) is prepended as a
+cacheable prefix (Anthropic `cache_control`), so its tokens are written to cache
+once and re-read at ~0.1× cost on later turns — watch `cache_read_input_tokens`
+climb in the trace. It's deliberately long: Anthropic won't cache a prefix below
+its minimum (4096 tokens for Haiku 4.5), so a short prompt would never hit.
+
 Interactive API docs are at `http://localhost:8000/docs`.
 
 ## Chat UI
