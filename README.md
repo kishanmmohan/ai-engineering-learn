@@ -34,5 +34,25 @@ cp .env.proxy.example .env.proxy               # add provider + LangFuse keys
 docker compose -f docker-compose-proxy.yml up -d # LiteLLM proxy (LLM gateway, :4000)
 ```
 
+## Run the chat service
+
+With the proxy up, start the FastAPI chat service (it reads the proxy master
+key from `.env.proxy`, so load it into the shell first):
+
+```sh
+set -a; source .env.proxy; set +a                    # export proxy + provider keys
+uv run uvicorn services.chat.src.main:app --reload   # http://localhost:8000
+```
+
+Then send a prompt — every `/chat` call is routed through the proxy:
+
+```sh
+curl -s localhost:8000/chat -X POST -H 'content-type: application/json' \
+  -d '{"prompt": "In one word, reply: ok"}'
+# -> {"reply":"Ok"}
+```
+
+Interactive API docs are at `http://localhost:8000/docs`.
+
 Development commands and tooling conventions are documented in
 [CLAUDE.md](CLAUDE.md).
