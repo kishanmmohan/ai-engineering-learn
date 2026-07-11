@@ -70,6 +70,15 @@ once and re-read at ~0.1× cost on later turns — watch `cache_read_input_token
 climb in the trace. It's deliberately long: Anthropic won't cache a prefix below
 its minimum (4096 tokens for Haiku 4.5), so a short prompt would never hit.
 
+Because the service is stateless, the resent history only grows. When it nears the
+context window the server **truncates the oldest turns** to fit, keeping the system
+prefix at the front and the freshest turns at the end (`_fit_to_window` in
+`ai_client.py`). Truncation is chosen over summarization to avoid an extra LLM call
+per long turn (latency, cost, a non-deterministic failure path); trimming only the
+history — which sits after the cache breakpoint — leaves the cached prefix intact.
+Set `CHAT_CONTEXT_WINDOW_TOKENS` low (e.g. `4600`) to force truncation on a short
+conversation; a `history_truncated` log line reports how many turns were dropped.
+
 Interactive API docs are at `http://localhost:8000/docs`.
 
 ## Chat UI

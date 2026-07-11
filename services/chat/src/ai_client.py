@@ -18,6 +18,16 @@ after it is never cached). The prefix must stay byte-identical and clear the
 provider's minimum cacheable length — 4096 tokens for Haiku 4.5 — or nothing caches.
 Cache hits show up as cache_read tokens in the LangFuse trace.
 
+Context management: /chat is stateless, so the client resends the whole history each
+turn and the messages list only grows — eventually past the model's context window
+(a hard cap: the request 400s, it does not silently drop text). We TRUNCATE the
+oldest turns to fit, keeping the system prefix at the front and the freshest turns at
+the end (see _fit_to_window). Truncation is chosen over summarization because
+summarizing would add an LLM round-trip per long turn — latency, spend, and a new
+non-deterministic failure path — to buy fidelity a workbench chat does not need.
+Dropping from the front of the history also leaves the cached system prefix untouched,
+so caching still hits.
+
 Run it:
     LITELLM_MASTER_KEY=sk-... uv run python services/chat/src/ai_client.py
 """
@@ -76,6 +86,62 @@ def _cached_system_message() -> dict[str, object]:
             }
         ],
     }
+
+
+# --- History window management ------------------------------------------------
+#
+# The window is a hard cap, so we keep the request under a budget rather than let the
+# provider reject it. Both values are env-overridable: shrink CHAT_CONTEXT_WINDOW_TOKENS
+# to force truncation on a short conversation (the "blow the context window" drill).
+CONTEXT_WINDOW_TOKENS = int(os.environ.get("CHAT_CONTEXT_WINDOW_TOKENS", "200000"))
+OUTPUT_HEADROOM_TOKENS = int(os.environ.get("CHAT_OUTPUT_HEADROOM_TOKENS", "8000"))
+# Model id used only for LOCAL token estimates (the request itself goes to `primary`
+# via the proxy). An approximation is fine — the headroom absorbs the slack.
+_TOKENIZER_MODEL = "claude-3-5-haiku-20241022"
+
+
+def _count_tokens(messages: list[Mapping[str, object]]) -> int:
+    """Best-effort local token count. Never raises — falls back to a char heuristic."""
+    try:
+        # litellm ships incomplete type stubs for token_counter().
+        return litellm.token_counter(model=_TOKENIZER_MODEL, messages=messages)  # pyright: ignore[reportUnknownMemberType]
+    except Exception:
+        chars = sum(len(str(m.get("content", ""))) for m in messages)
+        return chars // 4  # ~4 chars/token, the usual rough rule
+
+
+# Tokens spent by the always-present system prefix; computed once at import.
+_SYSTEM_PROMPT_TOKENS = _count_tokens([{"role": "system", "content": SYSTEM_PROMPT}])
+
+
+def _fit_to_window(
+    messages: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], int]:
+    """Drop the oldest turns until the request fits the window; keep the freshest.
+
+    Returns the kept turns (newest-preserving) and the count dropped. The system
+    prefix and the current (last) turn are always kept. Because we only ever trim
+    from the front of the history — which sits after the cached system breakpoint —
+    the cached prefix is never disturbed.
+    """
+    budget = CONTEXT_WINDOW_TOKENS - OUTPUT_HEADROOM_TOKENS - _SYSTEM_PROMPT_TOKENS
+
+    kept: list[dict[str, str]] = []
+    used = 0
+    for msg in reversed(messages):  # newest -> oldest
+        cost = _count_tokens([msg])
+        if kept and used + cost > budget:
+            break
+        kept.append(msg)
+        used += cost
+    kept.reverse()
+
+    # Anthropic requires the first turn to be `user`; drop a dangling leading
+    # assistant that truncation may have exposed, so the request stays valid.
+    while len(kept) > 1 and kept[0].get("role") != "user":
+        _ = kept.pop(0)
+
+    return kept, len(messages) - len(kept)
 
 
 def complete(prompt: str, model: str = "primary") -> str:
@@ -143,10 +209,20 @@ def stream_complete(
     if session_id:
         metadata["session_id"] = session_id
 
-    # Cached stable prefix first, then the variable client history. The system block
-    # is byte-identical every request, so its tokens are re-read from cache after the
+    # Trim oldest turns so the request fits the window, then assemble: cached stable
+    # prefix first, then the (possibly truncated) client history. The system block is
+    # byte-identical every request, so its tokens are re-read from cache after the
     # first call; the history after it changes every turn and is never cached.
-    full_messages: list[Mapping[str, object]] = [_cached_system_message(), *messages]
+    trimmed, dropped = _fit_to_window(messages)
+    if dropped:
+        log.info(
+            "history_truncated",
+            trace_id=trace_id,
+            session_id=session_id,
+            dropped_turns=dropped,
+            kept_turns=len(trimmed),
+        )
+    full_messages: list[Mapping[str, object]] = [_cached_system_message(), *trimmed]
 
     start = time.perf_counter()
     # metadata rides in extra_body so it reaches the PROXY request body (where its
