@@ -44,12 +44,15 @@ set -a; source .env.proxy; set +a                    # export proxy + provider k
 uv run uvicorn services.chat.src.main:app --reload   # http://localhost:8000
 ```
 
-Then send a prompt — every `/chat` call is routed through the proxy:
+Then send a prompt — `/chat` streams the reply back as Server-Sent Events
+(one `data:` line per token delta), routed through the proxy. `curl -N`
+disables buffering so you see tokens arrive live:
 
 ```sh
-curl -s localhost:8000/chat -X POST -H 'content-type: application/json' \
+curl -sN localhost:8000/chat -X POST -H 'content-type: application/json' \
   -d '{"prompt": "In one word, reply: ok"}'
-# -> {"reply":"Ok"}
+# -> data: {"delta": "Ok"}
+#    data: [DONE]
 ```
 
 Interactive API docs are at `http://localhost:8000/docs`.
