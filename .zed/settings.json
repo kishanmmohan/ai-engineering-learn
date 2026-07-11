@@ -24,14 +24,29 @@
       }
     }
   },
-  // Auto-activate the uv virtualenv (.venv) in Zed's integrated terminal.
   "terminal": {
+    // Auto-activate the uv virtualenv (.venv) in Zed's integrated terminal.
     "detect_venv": {
       "on": {
         "directories": [
           ".venv"
         ],
         "activate_script": "default"
+      }
+    },
+    // Load .env.proxy (proxy master key, provider + LangFuse keys) into every new
+    // terminal so `uv run ...` and curl against the proxy work without manual
+    // sourcing. Zed has no env-file option, so we wrap the shell: source the file
+    // (if present — it's gitignored, so may be absent) with `set -a` to export
+    // every assignment, then `exec` a fresh interactive login shell that inherits
+    // those vars. Secrets stay in .env.proxy, never in this committed file.
+    "shell": {
+      "with_arguments": {
+        "program": "/bin/zsh",
+        "args": [
+          "-c",
+          "set -a; [ -f .env.proxy ] && source .env.proxy; set +a; exec /bin/zsh -i -l"
+        ]
       }
     }
   }
