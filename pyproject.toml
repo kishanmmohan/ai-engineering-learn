@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.139.0",
     "langchain>=1.3.11",
     "langfuse>=4.13.0",
+    "jsonschema>=4.26.0",
     "langgraph>=1.2.8",
     "litellm>=1.91.0",
     "neo4j>=6.2.0",
@@ -37,3 +38,9 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+# Repo root on sys.path so tests can import services.chat.src.*; auto mode so
+# async tests/fixtures don't each need an explicit @pytest.mark.asyncio.
+pythonpath = ["."]
+asyncio_mode = "auto"
