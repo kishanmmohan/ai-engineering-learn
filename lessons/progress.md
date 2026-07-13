@@ -26,7 +26,7 @@
 - [ ] `/extract` returns schema-valid JSON or a clean, typed error after N retries — never malformed output
 - [ ] `/chat` streams; TTFT and total latency are both measured and logged
 - [ ] Every request produces a LangFuse trace with token counts and cost attached (model pricing configured in LangFuse)
-- [ ] The tool-calling loop handles a tool that throws an exception without crashing the conversation
+- [x] The tool-calling loop handles a tool that throws an exception without crashing the conversation
 - [x] Prompt caching enabled on the stable system prompt; cache hits visible in traces (2026-07-11) — verified via trace: call 1 cache_creation=4691, identical call 2 cache_read=4691
 
 ### Background threads

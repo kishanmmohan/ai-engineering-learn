@@ -51,7 +51,7 @@ A small FastAPI service, fronted by a **LiteLLM proxy**, that becomes the scaffo
 - [ ] `/extract` returns schema-valid JSON or a clean, typed error after N retries — never malformed output
 - [ ] `/chat` streams; TTFT and total latency are both measured and logged
 - [ ] Every request produces a LangFuse trace with token counts and **cost attached** (model pricing configured in LangFuse)
-- [ ] The tool-calling loop handles a tool that throws an exception without crashing the conversation
+- [x] The tool-calling loop handles a tool that throws an exception without crashing the conversation
 - [ ] Prompt caching enabled on the stable system prompt; cache hits visible in traces
 
 ## 5. Background Threads Checklist

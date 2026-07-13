@@ -11,6 +11,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel
 
+from .agent_loop import AgentLoopError as AgentLoopFailure
+from .agent_loop import run_agent_loop
 from .ai_client import stream_complete
 from .extract import EXTRACT_DEFAULT_MODE, ExtractionError, Mode, extract
 from .similar import SIMILAR_DEFAULT_K, SIMILAR_MAX_K, get_index, rank
@@ -93,6 +95,39 @@ class SimilarResponse(BaseModel):
 class SimilarError(BaseModel):
     error: str
     kind: Literal["upstream"]
+    detail: str
+
+
+class AgentLoopRequest(BaseModel):
+    # A single free-text query. The server owns the tools and the loop; the client
+    # only asks the question. The model decides which tools (if any) to call.
+    query: str
+
+
+class AgentLoopStep(BaseModel):
+    # One tool call the model made and what our code did with it — the visible trace
+    # of the loop. `ok` is False for both validation rejects (hallucinated tool /
+    # bad args) and tools that threw; `error` then carries the structured reason.
+    tool: str
+    arguments: str
+    ok: bool
+    result: str | None = None
+    error: str | None = None
+
+
+class AgentLoopResponse(BaseModel):
+    query: str
+    answer: str
+    iterations: int
+    steps: list[AgentLoopStep]
+
+
+class AgentLoopError(BaseModel):
+    # Typed error body — either the loop never converged, or the proxy/provider call
+    # failed. Never a 500 stack trace, never leaked topology.
+    error: str
+    kind: Literal["max_iterations", "upstream"]
+    iterations: int
     detail: str
 
 
@@ -220,3 +255,54 @@ def similar_endpoint(request: SimilarRequest) -> JSONResponse:
         corpus_tokens=result.corpus_tokens,
     )
     return JSONResponse(response.model_dump(), headers=headers)
+
+
+@app.post("/agent-loop")
+def agent_loop_endpoint(request: AgentLoopRequest) -> JSONResponse:
+    # Sync def (same reasoning as /extract): run_agent_loop() is a blocking sequence
+    # of proxy calls, so Starlette runs it in a threadpool and the event loop is never
+    # stalled. Not streamed: the whole loop must finish before there's a final answer
+    # (and the step trace) to return. Every iteration shares this trace_id, so the
+    # multi-call sequence is one coherent LangFuse trace.
+    trace_id = uuid.uuid4().hex
+    headers = {"X-Trace-Id": trace_id}
+
+    try:
+        result = run_agent_loop(query=request.query, trace_id=trace_id)
+        body = AgentLoopResponse(
+            query=request.query,
+            answer=result.final_answer,
+            iterations=result.iterations,
+            steps=[
+                AgentLoopStep(
+                    tool=s.tool,
+                    arguments=s.arguments,
+                    ok=s.ok,
+                    result=s.result,
+                    error=s.error,
+                )
+                for s in result.steps
+            ],
+        )
+        return JSONResponse(body.model_dump(), headers=headers)
+    except AgentLoopFailure as exc:
+        # The loop hit its iteration cap without converging: typed 422, not a hang.
+        err = AgentLoopError(
+            error="agent_loop_failed",
+            kind=exc.reason,
+            iterations=exc.iterations,
+            detail=exc.detail,
+        )
+        return JSONResponse(err.model_dump(), status_code=422, headers=headers)
+    except Exception as exc:
+        # Proxy/provider failure (429, timeout, outage). Log the real error
+        # server-side but return a generic detail — the raw exception can expose
+        # internal topology (proxy URLs, provider messages). Client gets X-Trace-Id.
+        log.warning("agent_loop_upstream_error", trace_id=trace_id, error=str(exc))
+        err = AgentLoopError(
+            error="upstream_error",
+            kind="upstream",
+            iterations=0,
+            detail="upstream model/proxy call failed; see server logs (X-Trace-Id)",
+        )
+        return JSONResponse(err.model_dump(), status_code=502, headers=headers)
