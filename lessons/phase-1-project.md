@@ -169,7 +169,7 @@ your say-so. They map to the exit gate's component #3.
 - [ ] `/chat` streams; TTFT and total latency are both measured and logged
 - [ ] Every request produces a LangFuse trace with token counts and **cost
       attached** (model pricing configured in LangFuse)
-- [ ] The tool-calling loop handles a tool that throws an exception without
+- [x] The tool-calling loop handles a tool that throws an exception without
       crashing the conversation
 - [ ] Prompt caching enabled on the stable system prompt; cache hits visible in
       traces
