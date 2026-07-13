@@ -127,10 +127,15 @@ def extract_endpoint(request: ExtractRequest) -> JSONResponse:
         )
         return JSONResponse(body.model_dump(), status_code=422, headers=headers)
     except Exception as exc:
-        # Proxy/provider failure (429, timeout, outage). Don't leak a 500 stack
-        # trace — return a typed upstream error the caller can branch on.
+        # Proxy/provider failure (429, timeout, outage). Log the real error
+        # server-side but return only a generic detail — the raw exception text can
+        # expose internal topology (proxy URLs, provider messages), and the client
+        # gets X-Trace-Id to correlate. Never a 500 stack trace either.
         log.warning("extract_upstream_error", trace_id=trace_id, error=str(exc))
         body = ExtractError(
-            error="upstream_error", kind="upstream", attempts=0, detail=str(exc)
+            error="upstream_error",
+            kind="upstream",
+            attempts=0,
+            detail="upstream model/proxy call failed; see server logs (X-Trace-Id)",
         )
         return JSONResponse(body.model_dump(), status_code=502, headers=headers)

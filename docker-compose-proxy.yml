@@ -54,8 +54,10 @@ services:
     # The frontend reaches it at http://chat:8000 over the compose network. Also
     # published to the host for direct testing (e.g. POST /extract): host 8001 ->
     # container 8000, mapped off :8000 since that host port is often already taken.
+    # Bound to 127.0.0.1 (not 0.0.0.0): the endpoint is unauthenticated and spends
+    # real LLM money, so it must not be reachable from the LAN — localhost only.
     ports:
-      - "8001:8000"   # http://localhost:8001
+      - "127.0.0.1:8001:8000"   # http://localhost:8001
     depends_on:
       litellm:
         condition: service_healthy
