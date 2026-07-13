@@ -58,6 +58,11 @@ curl -sN -D - localhost:8000/chat -X POST -H 'content-type: application/json' \
 #    data: [DONE]
 ```
 
+The endpoint samples at a deliberate `temperature=0.7` (env-overridable via
+`CHAT_TEMPERATURE`) — natural, varied replies that stay coherent, chosen on purpose
+rather than inheriting the provider default of 1.0; a structured endpoint like
+`/extract` would instead pin it to `0` for reproducible, schema-valid output.
+
 Every request is one LangFuse trace: token counts + cost from the proxy, plus
 two NUMERIC scores the service measures and attaches — `ttft_ms` (time to first
 token) and `total_latency_ms`. The server is stateless, so a multi-turn client

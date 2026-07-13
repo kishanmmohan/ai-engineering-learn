@@ -46,6 +46,12 @@ from langfuse import Langfuse
 PROXY_URL = os.environ.get("LITELLM_PROXY_URL", "http://localhost:4000")
 MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 
+# Sampling temperature for the conversational endpoint. 0.7 (not the API default of
+# 1.0) keeps replies natural and varied but coherent and on-topic; a task endpoint
+# like /extract would instead pin this to 0 for reproducible, schema-valid output.
+# Tune temperature OR top_p, never both (see system_prompt.md).
+CHAT_TEMPERATURE = float(os.environ.get("CHAT_TEMPERATURE", "0.7"))
+
 # structlog.get_logger() is typed as Any by design; pin a concrete bound-logger type.
 log: structlog.stdlib.BoundLogger = structlog.get_logger()  # pyright: ignore[reportAny]
 
@@ -156,6 +162,7 @@ def complete(prompt: str, model: str = "primary") -> str:
         api_base=PROXY_URL,
         api_key=MASTER_KEY,
         messages=[{"role": "user", "content": prompt}],
+        temperature=CHAT_TEMPERATURE,
     )
     # Not streaming, so this is always a ModelResponse (not a CustomStreamWrapper).
     assert isinstance(response, litellm.ModelResponse)
@@ -235,6 +242,7 @@ def stream_complete(
         api_key=MASTER_KEY,
         messages=full_messages,
         stream=True,
+        temperature=CHAT_TEMPERATURE,
         extra_body={"metadata": metadata},
     )
     # stream=True always yields a CustomStreamWrapper (not a ModelResponse).
