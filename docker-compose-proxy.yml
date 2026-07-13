@@ -51,11 +51,11 @@ services:
     environment:
       # Reach the gateway over the compose network, not the host's localhost.
       LITELLM_PROXY_URL: http://litellm:4000
-    # Internal-only by design: the frontend reaches it at http://chat:8000 over the
-    # compose network. Not published to the host (host :8000 is often already taken).
-    # Uncomment to curl it directly during debugging.
-    # ports:
-    #   - "8000:8000"
+    # The frontend reaches it at http://chat:8000 over the compose network. Also
+    # published to the host for direct testing (e.g. POST /extract): host 8001 ->
+    # container 8000, mapped off :8000 since that host port is often already taken.
+    ports:
+      - "8001:8000"   # http://localhost:8001
     depends_on:
       litellm:
         condition: service_healthy

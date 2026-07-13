@@ -86,6 +86,58 @@ conversation; a `history_truncated` log line reports how many turns were dropped
 
 Interactive API docs are at `http://localhost:8000/docs`.
 
+## Structured extraction (`POST /extract`)
+
+`POST /extract` takes raw `text` plus a `json_schema` and returns JSON that
+**validates against that schema** — or, when the model can't produce valid output
+within a retry budget, a clean typed error (a `422` with an `ExtractError` body,
+never malformed JSON and never a 500 stack trace):
+
+```sh
+curl -s -D - localhost:8000/extract -X POST -H 'content-type: application/json' -d '{
+  "text": "Ada Lovelace was 36.",
+  "json_schema": {"type": "object",
+    "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+    "required": ["name", "age"], "additionalProperties": false},
+  "mode": "native"
+}'
+# X-Trace-Id: <hex>                 <- find this request (and its retries) in LangFuse
+# -> {"name": "Ada Lovelace", "age": 36}
+```
+
+It is **not streamed**: the consumer is a machine that must validate the whole
+payload against the schema before using any of it, so a half-arrived JSON object is
+unparseable — there is nothing to stream toward. It samples at `temperature=0`
+(env `EXTRACT_TEMPERATURE`): greedy decoding takes the arg-max token each step,
+which minimises excursions into the low-probability regions where malformed tokens
+live and makes a given failure reproducible. Greedy decoding still doesn't guarantee
+valid structure, which is exactly why the result is validated and retried rather
+than trusted.
+
+Extraction runs one of two ways, chosen per request via `mode` (default
+`EXTRACT_DEFAULT_MODE`, `native`):
+
+- **`native`** — sends a `response_format` json_schema. The proxy translates it
+  per provider: `primary` (Anthropic) becomes a forced tool call (server-side JSON
+  enforcement), the `fallback` (OpenAI) uses strict json_schema. Note `drop_params:
+  true` in `config.yaml` can silently drop the param on an unsupported path.
+- **`prompt`** — no `response_format`; the schema is embedded in the prompt with a
+  "return only JSON" instruction. Enforcement is nothing but the model's obedience.
+
+Both modes exist so Break-It #2 can compare their failure **rates** on the same
+adversarial input. Either way the parsed result is validated with `jsonschema`; on a
+parse or validation failure the error is fed back into the messages and the model is
+re-prompted up to `EXTRACT_MAX_RETRIES` times (default `2` → 3 attempts total). At
+`temperature=0` a bare retry re-rolls nearly the same output, so it's the fed-back
+error — not the retry count — that changes the next attempt; hence a small N.
+
+A malformed input `json_schema` is rejected up front (`kind: "bad_schema"`, no model
+call). To watch the **retry loop fire in a trace**, grab the `X-Trace-Id` header and
+run `uv run python services/proxy/verify_trace.py --trace-id <id>` — each attempt is
+a separate generation under the one trace, and the run carries `extract_attempts` /
+`extract_outcome` scores. Force the typed-error path with `EXTRACT_MAX_RETRIES=0`
+and adversarial input.
+
 ## Chat UI
 
 A Nuxt frontend (Claude/ChatGPT-style: streaming replies, markdown, multi-turn)
