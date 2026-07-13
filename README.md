@@ -138,6 +138,50 @@ a separate generation under the one trace, and the run carries `extract_attempts
 `extract_outcome` scores. Force the typed-error path with `EXTRACT_MAX_RETRIES=0`
 and adversarial input.
 
+## Similarity search (`POST /similar`)
+
+`POST /similar` embeds a query and returns the top-k most similar documents from
+a small (~50-doc) in-memory corpus (`services/chat/src/corpus.py`), ranked by
+**cosine similarity computed by hand** (`cosine_similarity` in `similar.py` — no
+`scipy`/`sklearn` one-liner). The corpus is embedded **once at startup** (a single
+batched call, warmed by the app's lifespan handler); each request embeds only the
+query:
+
+```sh
+curl -s -D - localhost:8000/similar -X POST -H 'content-type: application/json' \
+  -d '{"query": "which language is best for data science?", "k": 3}'
+# X-Trace-Id: <hex>   <- find the embedding call (tokens + cost) in LangFuse
+# -> {"query": "...", "matches": [{"index": 0, "score": 0.62, "text": "Python is ..."}],
+#     "query_tokens": 8, "estimated_cost_usd": 1.6e-07, "corpus_tokens": 1023}
+```
+
+**Tokens & cost (#1).** Every embedding call logs its token count and an estimated
+USD cost (`corpus_embedded` at startup, `query_embedded` per request); the proxy's
+LangFuse callback records the authoritative cost. The corpus is ~50 one-sentence
+docs of ~20 tokens each, so the one-time embedding is ≈ 1,000 tokens; at
+`text-embedding-3-small`'s $0.02 / 1M tokens that is ≈ **$0.00002**. Check the paper
+estimate against the trace with `uv run python services/proxy/verify_trace.py
+--trace-id <id>`.
+
+**The trap (self-check).** The corpus seeds a *trap pair* — two docs on the same
+topic with opposite sentiment (a firmware update that *helped* vs. *hurt* battery
+life, `corpus.TRAP_PAIR`). Query the topic neutrally:
+
+```sh
+curl -s localhost:8000/similar -X POST -H 'content-type: application/json' \
+  -d '{"query": "phone battery life after the firmware update", "k": 2}'
+# -> both the positive AND the negative doc come back with near-identical scores
+```
+
+Both rank at the top because the embedding encodes *topical and lexical
+proximity*, not truth or sentiment: the two sentences differ in only a few tokens
+("two full days / best" vs. "half a day / worst"), so their vectors are close and
+cosine is high — a high-similarity result that is the **wrong answer**. Cosine
+cannot be tuned to separate them; the fix is a **second stage** over the top
+candidates — a cross-encoder reranker, a stance/sentiment filter, or an
+LLM-as-judge — which is exactly what Phase 2's `/ask` (retrieve-wide-then-rerank)
+introduces.
+
 ## Chat UI
 
 A Nuxt frontend (Claude/ChatGPT-style: streaming replies, markdown, multi-turn)

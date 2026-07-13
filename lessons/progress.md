@@ -58,6 +58,7 @@
 ## Session journal
 
 <!-- - YYYY-MM-DD: one line -->
+- 2026-07-13: M3 `/similar` built — embeddings + cosine-by-hand over a ~50-doc corpus; token count + estimated cost logged per embedding call (corpus once at startup, query per request). Self-check: the firmware-battery trap pair (same topic, opposite sentiment) both rank top for a neutral query because embeddings encode topical/lexical proximity, not sentiment/truth; the fix is a second stage (rerank / stance filter / LLM-judge), not a better cosine.
 - 2026-07-09: Covered tokens & context windows (subword/BPE, content-type cost differences, window as validated hard cap, max_tokens stop_reason gotcha). First answer conflated tokenization granularity with context/hallucination — cleared same session via transfer questions.
 - 2026-07-09: Covered messages structure & statelessness (no server session, full transcript resent per turn, state = recurring billable payload not just storage, shrink strategies summarize vs truncate both lossy). Solid grasp; named both shrink strategies unprompted.
 - 2026-07-09: Covered sampling (distribution+sampler model, temp/top_p reliability dials, temp-0 non-determinism from FP non-associativity under batching = SAQ#1, greedy≠globally-valid JSON so validate+retry). Nailed the FP/hardware cause unprompted; "why" in mechanism terms was thin, filled in — watch for tendency to give the what without the mechanism.
