@@ -1,6 +1,7 @@
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import asynccontextmanager
 from typing import Literal
 
 import structlog
@@ -10,12 +11,28 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel
 
+from .agent_loop import AgentLoopError as AgentLoopFailure
+from .agent_loop import run_agent_loop
 from .ai_client import stream_complete
 from .extract import EXTRACT_DEFAULT_MODE, ExtractionError, Mode, extract
-
-app = FastAPI(title="chat-service")
+from .similar import SIMILAR_DEFAULT_K, SIMILAR_MAX_K, get_index, rank
 
 log: structlog.stdlib.BoundLogger = structlog.get_logger()  # pyright: ignore[reportAny]
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    # Warm the /similar corpus index at startup so the first request isn't slow.
+    # Best-effort: if the proxy is unreachable at boot, log and carry on — the
+    # endpoint rebuilds lazily on first use (and 502s cleanly if that fails).
+    try:
+        _ = get_index()
+    except Exception as exc:
+        log.warning("corpus_index_warm_failed", error=str(exc))
+    yield
+
+
+app = FastAPI(title="chat-service", lifespan=lifespan)
 
 # Proxy model_name (from services/proxy/config.yaml) — fixed server-side, not
 # client-selectable.
@@ -49,6 +66,68 @@ class ExtractError(BaseModel):
     error: str
     kind: Literal["parse", "schema", "bad_schema", "upstream"]
     attempts: int
+    detail: str
+
+
+class SimilarRequest(BaseModel):
+    # Free-text query to embed, plus how many matches to return (clamped to
+    # [1, SIMILAR_MAX_K] server-side). The corpus is fixed and server-owned.
+    query: str
+    k: int = SIMILAR_DEFAULT_K
+
+
+class SimilarMatch(BaseModel):
+    index: int
+    score: float
+    text: str
+
+
+class SimilarResponse(BaseModel):
+    # Ranked matches plus token accounting (#1): query_tokens is this request's
+    # embedding cost; corpus_tokens is what the one-time startup embedding spent.
+    query: str
+    matches: list[SimilarMatch]
+    query_tokens: int
+    estimated_cost_usd: float
+    corpus_tokens: int
+
+
+class SimilarError(BaseModel):
+    error: str
+    kind: Literal["upstream"]
+    detail: str
+
+
+class AgentLoopRequest(BaseModel):
+    # A single free-text query. The server owns the tools and the loop; the client
+    # only asks the question. The model decides which tools (if any) to call.
+    query: str
+
+
+class AgentLoopStep(BaseModel):
+    # One tool call the model made and what our code did with it — the visible trace
+    # of the loop. `ok` is False for both validation rejects (hallucinated tool /
+    # bad args) and tools that threw; `error` then carries the structured reason.
+    tool: str
+    arguments: str
+    ok: bool
+    result: str | None = None
+    error: str | None = None
+
+
+class AgentLoopResponse(BaseModel):
+    query: str
+    answer: str
+    iterations: int
+    steps: list[AgentLoopStep]
+
+
+class AgentLoopError(BaseModel):
+    # Typed error body — either the loop never converged, or the proxy/provider call
+    # failed. Never a 500 stack trace, never leaked topology.
+    error: str
+    kind: Literal["max_iterations", "upstream"]
+    iterations: int
     detail: str
 
 
@@ -139,3 +218,91 @@ def extract_endpoint(request: ExtractRequest) -> JSONResponse:
             detail="upstream model/proxy call failed; see server logs (X-Trace-Id)",
         )
         return JSONResponse(body.model_dump(), status_code=502, headers=headers)
+
+
+@app.post("/similar")
+def similar_endpoint(request: SimilarRequest) -> JSONResponse:
+    # Sync def: rank() makes one blocking embedding call through the proxy, so
+    # Starlette runs it in a threadpool (same reasoning as /extract). Not
+    # streamed: ranking needs the whole query embedding before it scores anything.
+    trace_id = uuid.uuid4().hex
+    headers = {"X-Trace-Id": trace_id}
+    k = max(1, min(request.k, SIMILAR_MAX_K))
+
+    try:
+        result = rank(request.query, k, trace_id=trace_id)
+    except Exception as exc:
+        # Proxy/provider failure on the embedding call. Log the real error,
+        # return a generic typed 502 — never leak topology, never a 500 trace.
+        log.warning("similar_upstream_error", trace_id=trace_id, error=str(exc))
+        body = SimilarError(
+            error="upstream_error",
+            kind="upstream",
+            detail=(
+                "upstream embedding/proxy call failed; see server logs (X-Trace-Id)"
+            ),
+        )
+        return JSONResponse(body.model_dump(), status_code=502, headers=headers)
+
+    response = SimilarResponse(
+        query=request.query,
+        matches=[
+            SimilarMatch(index=m.index, score=m.score, text=m.text)
+            for m in result.matches
+        ],
+        query_tokens=result.query_tokens,
+        estimated_cost_usd=result.estimated_cost_usd,
+        corpus_tokens=result.corpus_tokens,
+    )
+    return JSONResponse(response.model_dump(), headers=headers)
+
+
+@app.post("/agent-loop")
+def agent_loop_endpoint(request: AgentLoopRequest) -> JSONResponse:
+    # Sync def (same reasoning as /extract): run_agent_loop() is a blocking sequence
+    # of proxy calls, so Starlette runs it in a threadpool and the event loop is never
+    # stalled. Not streamed: the whole loop must finish before there's a final answer
+    # (and the step trace) to return. Every iteration shares this trace_id, so the
+    # multi-call sequence is one coherent LangFuse trace.
+    trace_id = uuid.uuid4().hex
+    headers = {"X-Trace-Id": trace_id}
+
+    try:
+        result = run_agent_loop(query=request.query, trace_id=trace_id)
+        body = AgentLoopResponse(
+            query=request.query,
+            answer=result.final_answer,
+            iterations=result.iterations,
+            steps=[
+                AgentLoopStep(
+                    tool=s.tool,
+                    arguments=s.arguments,
+                    ok=s.ok,
+                    result=s.result,
+                    error=s.error,
+                )
+                for s in result.steps
+            ],
+        )
+        return JSONResponse(body.model_dump(), headers=headers)
+    except AgentLoopFailure as exc:
+        # The loop hit its iteration cap without converging: typed 422, not a hang.
+        err = AgentLoopError(
+            error="agent_loop_failed",
+            kind=exc.reason,
+            iterations=exc.iterations,
+            detail=exc.detail,
+        )
+        return JSONResponse(err.model_dump(), status_code=422, headers=headers)
+    except Exception as exc:
+        # Proxy/provider failure (429, timeout, outage). Log the real error
+        # server-side but return a generic detail — the raw exception can expose
+        # internal topology (proxy URLs, provider messages). Client gets X-Trace-Id.
+        log.warning("agent_loop_upstream_error", trace_id=trace_id, error=str(exc))
+        err = AgentLoopError(
+            error="upstream_error",
+            kind="upstream",
+            iterations=0,
+            detail="upstream model/proxy call failed; see server logs (X-Trace-Id)",
+        )
+        return JSONResponse(err.model_dump(), status_code=502, headers=headers)

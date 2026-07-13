@@ -138,6 +138,94 @@ a separate generation under the one trace, and the run carries `extract_attempts
 `extract_outcome` scores. Force the typed-error path with `EXTRACT_MAX_RETRIES=0`
 and adversarial input.
 
+## Similarity search (`POST /similar`)
+
+`POST /similar` embeds a query and returns the top-k most similar documents from
+a small (~50-doc) in-memory corpus (`services/chat/src/corpus.py`), ranked by
+**cosine similarity computed by hand** (`cosine_similarity` in `similar.py` — no
+`scipy`/`sklearn` one-liner). The corpus is embedded **once at startup** (a single
+batched call, warmed by the app's lifespan handler); each request embeds only the
+query:
+
+```sh
+curl -s -D - localhost:8000/similar -X POST -H 'content-type: application/json' \
+  -d '{"query": "which language is best for data science?", "k": 3}'
+# X-Trace-Id: <hex>   <- find the embedding call (tokens + cost) in LangFuse
+# -> {"query": "...", "matches": [{"index": 0, "score": 0.62, "text": "Python is ..."}],
+#     "query_tokens": 8, "estimated_cost_usd": 1.6e-07, "corpus_tokens": 1023}
+```
+
+**Tokens & cost (#1).** Every embedding call logs its token count and an estimated
+USD cost (`corpus_embedded` at startup, `query_embedded` per request); the proxy's
+LangFuse callback records the authoritative cost. The corpus is ~50 one-sentence
+docs of ~20 tokens each, so the one-time embedding is ≈ 1,000 tokens; at
+`text-embedding-3-small`'s $0.02 / 1M tokens that is ≈ **$0.00002**. Check the paper
+estimate against the trace with `uv run python services/proxy/verify_trace.py
+--trace-id <id>`.
+
+**The trap (self-check).** The corpus seeds a *trap pair* — two docs on the same
+topic with opposite sentiment (a firmware update that *helped* vs. *hurt* battery
+life, `corpus.TRAP_PAIR`). Query the topic neutrally:
+
+```sh
+curl -s localhost:8000/similar -X POST -H 'content-type: application/json' \
+  -d '{"query": "phone battery life after the firmware update", "k": 2}'
+# -> both the positive AND the negative doc come back with near-identical scores
+```
+
+Both rank at the top because the embedding encodes *topical and lexical
+proximity*, not truth or sentiment: the two sentences differ in only a few tokens
+("two full days / best" vs. "half a day / worst"), so their vectors are close and
+cosine is high — a high-similarity result that is the **wrong answer**. Cosine
+cannot be tuned to separate them; the fix is a **second stage** over the top
+candidates — a cross-encoder reranker, a stance/sentiment filter, or an
+LLM-as-judge — which is exactly what Phase 2's `/ask` (retrieve-wide-then-rerank)
+introduces.
+
+## Agent loop (`POST /agent-loop`)
+
+`POST /agent-loop` answers a query with **a hand-rolled tool-calling loop — the
+model requests, our code executes** (`run_agent_loop` in `agent_loop.py`; no
+framework). Two tools are advertised: `calculator` (safe arithmetic, evaluated via
+an AST whitelist — never `eval`) and `weather` (a deterministic stub). The
+orchestrator sends the tool schemas, detects when the model wants a tool, **runs it
+itself**, appends the result to the transcript, and resends — until the model emits
+a final answer with no tool call:
+
+```sh
+curl -s -D - localhost:8000/agent-loop -X POST -H 'content-type: application/json' \
+  -d '{"query": "What is 47 * 89, and what is the weather in Paris?"}'
+# X-Trace-Id: <hex>   <- every iteration is one generation under this single trace
+# -> {"answer": "47 × 89 = 4,183 ... Paris: 18°C, light rain", "iterations": 2,
+#     "steps": [{"tool": "calculator", "ok": true, "result": "{\"result\": 4183.0}"},
+#               {"tool": "weather", "ok": true, "result": "..."}]}
+```
+
+**The tool loop (#4).** Who does what is the whole lesson: *we* define the schemas,
+the *model* decides which tool to call and with what args, *our code* executes it,
+and the model only ever sees the `tool` result we append — it runs nothing. A tool
+request is just sampled text, so it's **validated before execution** (unknown tool
+name or un-parseable args are rejected and fed back as a structured error, not
+trusted). The loop is **capped** (`AGENT_LOOP_MAX_ITERATIONS`, default 6); a model
+that never stops asking for tools gets a typed `422` (`kind: "max_iterations"`),
+not an infinite spend.
+
+**Failure handling (#7) — the self-check.** One tool can throw: ask for a division
+by zero and watch the conversation *survive* it —
+
+```sh
+curl -s localhost:8000/agent-loop -X POST -H 'content-type: application/json' \
+  -d '{"query": "Use the calculator to compute 10 divided by 0."}'
+# -> HTTP 200; the step is {"ok": false, "error": "{\"error\": \"ZeroDivisionError: ...\"}"}
+#    and the model recovers with a graceful final answer — not a 500
+```
+
+The tool's exception is caught, serialized, and returned to the model as the tool
+result; it reads the error and explains it instead of crashing the loop. *If a tool
+throws, does the conversation survive — and where does the model's tool request get
+validated before execution?* (`_execute_tool` in `agent_loop.py`.) This raw loop is
+the foundation Phase 3's LangGraph is "just a state machine around."
+
 ## Chat UI
 
 A Nuxt frontend (Claude/ChatGPT-style: streaming replies, markdown, multi-turn)
